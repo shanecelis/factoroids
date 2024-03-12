@@ -80,10 +80,10 @@ fn main() {
             asteroid_spawn_system.run_if(on_timer(Duration::from_secs_f32(0.5))),
         )
         .add_systems(Update, asteroid_generation_system)
-        .add_systems(
-            Update,
-            ufo_spawn_system.run_if(on_timer(Duration::from_secs_f32(1.0))),
-        )
+        // .add_systems(
+        //     Update,
+        //     ufo_spawn_system.run_if(on_timer(Duration::from_secs_f32(1.0))),
+        // )
         .add_systems(Update, explosion_system)
         .add_systems(Update, ship_state_system.before(CollisionSystemLabel))
         .add_systems(Update, ufo_state_system.before(CollisionSystemLabel))
@@ -125,6 +125,7 @@ struct SteeringControl(Angle);
 struct Weapon {
     cooldown: Timer,
     force: f32,
+    factor: u32,
     triggered: bool,
     automatic: bool,
 }
@@ -134,6 +135,7 @@ impl Default for Weapon {
         Self {
             cooldown: Timer::default(),
             force: 1000.0,
+            factor: 2,
             triggered: false,
             automatic: false,
         }
@@ -225,6 +227,9 @@ struct Explosion;
 #[derive(Debug, Component, Default)]
 struct Asteroid;
 
+#[derive(Debug, Component, Default)]
+struct Factor(u32);
+
 #[derive(Debug, Event)]
 struct AsteroidSpawnEvent(Vec2, Bounding);
 
@@ -293,6 +298,7 @@ fn weapon_system(
             let bounds = **bounds + 10.0;
             let bullet_pos = transform.translation + (bullet_dir * bounds);
 
+            let factor: u32 = weapon.factor;
             commands
                 .spawn(ShapeBundle {
                     path: GeometryBuilder::build_as(&shapes::Circle {
@@ -311,7 +317,15 @@ fn weapon_system(
                 .insert(Collidable)
                 .insert(Bounding::from_radius(2.0))
                 .insert(Velocity::from(Vec2::new(bullet_vel.x, bullet_vel.y)))
-                .insert(BoundaryRemoval);
+                .insert(BoundaryRemoval)
+                .insert(Factor(factor))
+                .with_children(|parent| {
+                    parent.spawn(Text2dBundle {
+                        text: Text::from_section(format!("{}", factor), TextStyle::default()),
+                        transform: Transform::from_xyz(0.0, 12.0, 0.0),
+                        ..default()
+                    });
+                });
         }
     }
 }
@@ -566,6 +580,7 @@ fn asteroid_generation_system(
         };
         let velocity = (velocity - *position).normalize_or_zero() * scale;
 
+
         let shape = {
             let sides = rng.gen_range(6..12);
             let mut points = Vec::with_capacity(sides);
@@ -585,13 +600,15 @@ fn asteroid_generation_system(
                 closed: true,
             }
         };
+        let area = polygon_area(&shape);
+        let number = (area / 100.0).floor() as u32;
 
         commands
             .spawn(ShapeBundle {
                 path: GeometryBuilder::build_as(&shape),
                 ..Default::default()
             })
-            .insert(Stroke::new(Color::WHITE, 1.0))
+            .insert(Stroke::new(Color::GREEN, 1.0))
             .insert(Transform::from_translation(Vec3::new(
                 position.x, position.y, 0.0,
             )))
@@ -600,8 +617,23 @@ fn asteroid_generation_system(
             .insert(*bounds)
             .insert(Velocity::from(velocity))
             .insert(AngularVelocity::from(rng.gen_range(-3.0..3.0)))
-            .insert(BoundaryRemoval);
+            .insert(BoundaryRemoval)
+            .insert(Factor(number))
+            .with_children(|parent| {
+                parent.spawn(Text2dBundle {
+                    text: Text::from_section(format!("{}", number), TextStyle::default()),
+                    ..default()
+                });
+            });
     }
+}
+
+fn polygon_area(polygon: &Polygon) -> f32 {
+    let mut area = 0.0;
+    for i in 1..polygon.points.len() - 1 {
+        area += polygon.points[i].x * (polygon.points[i + 1].y - polygon.points[i - 1].y);
+    }
+    area / 2.0
 }
 
 fn steering_control_system(
@@ -690,7 +722,8 @@ fn asteroid_hit_system(
     mut asteroid_hits: EventReader<HitEvent<Bullet, Asteroid>>,
     mut asteroid_spawn: EventWriter<AsteroidSpawnEvent>,
     mut commands: Commands,
-    query: Query<(&Transform, &Bounding), With<Asteroid>>,
+    query: Query<(&Transform, &Bounding, &Factor), With<Asteroid>>,
+    bullet_query: Query<&Factor, With<Bullet>>,
 ) {
     let mut removed = HashSet::with_capacity(asteroid_hits.len());
 
@@ -702,7 +735,9 @@ fn asteroid_hit_system(
             continue;
         }
 
-        if let Ok((transform, radius)) = query.get(asteroid) {
+        let Ok(bullet_factor) = bullet_query.get(bullet) else { continue; };
+
+        if let Ok((transform, radius, asteroid_factor)) = query.get(asteroid) {
             let position = Vec2::new(transform.translation.x, transform.translation.y);
 
             let explosion_size = if asteroid_sizes.big.contains(radius) {
@@ -738,8 +773,8 @@ fn asteroid_hit_system(
             }
         }
 
-        commands.entity(asteroid).despawn();
-        commands.entity(bullet).despawn();
+        commands.entity(asteroid).despawn_recursive();
+        commands.entity(bullet).despawn_recursive();
 
         removed.insert(asteroid);
         removed.insert(bullet);
