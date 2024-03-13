@@ -1,3 +1,4 @@
+// #![feature(extract_if)]
 #![allow(clippy::type_complexity)]
 
 use std::{f32::consts::PI, ops::Range, time::Duration};
@@ -227,8 +228,20 @@ struct Explosion;
 #[derive(Debug, Component, Default)]
 struct Asteroid;
 
-#[derive(Debug, Component, Default)]
-struct Factor(u32);
+#[derive(Debug, Component, Default, Deref, DerefMut)]
+struct Factors(u32);
+
+impl From<Bounding> for Factors {
+    fn from(bounding: Bounding) -> Self {
+        Factors((*bounding - 9.0).ceil() as u32)
+    }
+}
+
+impl From<Factors> for Bounding {
+    fn from(factors: Factors) -> Self {
+        Bounding::from_radius(factors.0 as f32 + 9.0)
+    }
+}
 
 #[derive(Debug, Event)]
 struct AsteroidSpawnEvent(Vec2, Bounding);
@@ -318,7 +331,7 @@ fn weapon_system(
                 .insert(Bounding::from_radius(2.0))
                 .insert(Velocity::from(Vec2::new(bullet_vel.x, bullet_vel.y)))
                 .insert(BoundaryRemoval)
-                .insert(Factor(factor))
+                .insert(Factors(factor))
                 .with_children(|parent| {
                     parent.spawn(Text2dBundle {
                         text: Text::from_section(format!("{}", factor), TextStyle::default()),
@@ -618,7 +631,7 @@ fn asteroid_generation_system(
             .insert(Velocity::from(velocity))
             .insert(AngularVelocity::from(rng.gen_range(-3.0..3.0)))
             .insert(BoundaryRemoval)
-            .insert(Factor(number))
+            .insert(Factors(number))
             .with_children(|parent| {
                 parent.spawn(Text2dBundle {
                     text: Text::from_section(format!("{}", number), TextStyle::default()),
@@ -722,8 +735,8 @@ fn asteroid_hit_system(
     mut asteroid_hits: EventReader<HitEvent<Bullet, Asteroid>>,
     mut asteroid_spawn: EventWriter<AsteroidSpawnEvent>,
     mut commands: Commands,
-    query: Query<(&Transform, &Bounding, &Factor), With<Asteroid>>,
-    bullet_query: Query<&Factor, With<Bullet>>,
+    query: Query<(&Transform, &Bounding, &Factors), With<Asteroid>>,
+    bullet_query: Query<&Factors, With<Bullet>>,
 ) {
     let mut removed = HashSet::with_capacity(asteroid_hits.len());
 
@@ -737,39 +750,55 @@ fn asteroid_hit_system(
 
         let Ok(bullet_factor) = bullet_query.get(bullet) else { continue; };
 
-        if let Ok((transform, radius, asteroid_factor)) = query.get(asteroid) {
-            let position = Vec2::new(transform.translation.x, transform.translation.y);
+        if let Ok((transform, radius, asteroid_factors)) = query.get(asteroid) {
+            // let mut afactors: Vec<u32> = facto::Factoring::factor(asteroid_factors.0);
+            let mut afactors: Vec<u32> = vec![asteroid_factors.0];
+            // afactors = vec![asteroid_factors.0];
 
-            let explosion_size = if asteroid_sizes.big.contains(radius) {
-                let bounds = Bounding::from_radius(rng.gen_range(asteroid_sizes.medium.clone()));
-                asteroid_spawn.send(AsteroidSpawnEvent(position, bounds));
-                asteroid_spawn.send(AsteroidSpawnEvent(position, bounds));
-                5
-            } else if asteroid_sizes.medium.contains(radius) {
-                let bounds = Bounding::from_radius(rng.gen_range(asteroid_sizes.small.clone()));
-                asteroid_spawn.send(AsteroidSpawnEvent(position, bounds));
-                asteroid_spawn.send(AsteroidSpawnEvent(position, bounds));
-                asteroid_spawn.send(AsteroidSpawnEvent(position, bounds));
-                3
+            // BUG: Ran into weird behavior with rustc here. It complained about
+            // bounds not having a f32 < Bounds.
+            if let Some(pos) = afactors.iter().position(|&e| e == bullet_factor.0) {
+                afactors.remove(pos);
+            // if afactors.extract_if(|x| *x == bullet_factor.0).next().is_some() {
+                let position = Vec2::new(transform.translation.x, transform.translation.y);
+                // afactors.shuffle();
+                let explosion_size = if asteroid_sizes.big.contains(radius) {
+                    let take_count = rng.gen_range(0..afactors.len());
+                    let asteroid_a = Factors(afactors.drain(0..take_count).product());
+                    let asteroid_b = Factors(afactors.drain(0..).product());
+
+                    // let bounds = Bounding::from_radius(rng.gen_range(asteroid_sizes.medium.clone()));
+                    asteroid_spawn.send(AsteroidSpawnEvent(position, asteroid_a.into()));
+                    asteroid_spawn.send(AsteroidSpawnEvent(position, asteroid_b.into()));
+                    5
+                } else if asteroid_sizes.medium.contains(radius) {
+                    let bounds = Bounding::from_radius(rng.gen_range(asteroid_sizes.small.clone()));
+                    asteroid_spawn.send(AsteroidSpawnEvent(position, bounds));
+                    asteroid_spawn.send(AsteroidSpawnEvent(position, bounds));
+                    asteroid_spawn.send(AsteroidSpawnEvent(position, bounds));
+                    3
+                } else {
+                    1
+                };
+
+                for n in 0..12 * explosion_size {
+                    let angle = 2.0 * PI / 12.0 * (n % 12) as f32 + rng.gen_range(0.0..2.0 * PI / 12.0);
+                    let direction = Vec3::new(angle.cos(), angle.sin(), 0.0);
+                    let position = direction * rng.gen_range(1.0..20.0) + transform.translation;
+
+                    commands
+                        .spawn(ExplosionBundle::default())
+                        .insert(Transform::from_translation(position))
+                        .insert(Velocity::from(
+                            Vec2::new(angle.cos(), angle.sin()) * rng.gen_range(50.0..100.0),
+                        ))
+                        .insert(Expiration::new(Duration::from_millis(
+                            rng.gen_range(400..700),
+                        )))
+                        .insert(Flick::new(Duration::from_millis(rng.gen_range(20..30))));
+                }
             } else {
-                1
-            };
-
-            for n in 0..12 * explosion_size {
-                let angle = 2.0 * PI / 12.0 * (n % 12) as f32 + rng.gen_range(0.0..2.0 * PI / 12.0);
-                let direction = Vec3::new(angle.cos(), angle.sin(), 0.0);
-                let position = direction * rng.gen_range(1.0..20.0) + transform.translation;
-
-                commands
-                    .spawn(ExplosionBundle::default())
-                    .insert(Transform::from_translation(position))
-                    .insert(Velocity::from(
-                        Vec2::new(angle.cos(), angle.sin()) * rng.gen_range(50.0..100.0),
-                    ))
-                    .insert(Expiration::new(Duration::from_millis(
-                        rng.gen_range(400..700),
-                    )))
-                    .insert(Flick::new(Duration::from_millis(rng.gen_range(20..30))));
+                info!("Bullet {} not a factor of asteroid {} ({:?})", bullet_factor.0, asteroid_factors.0, &afactors);
             }
         }
 
