@@ -613,8 +613,10 @@ fn asteroid_generation_system(
                 closed: true,
             }
         };
-        let area = polygon_area(&shape);
-        let number = (area / 100.0).floor() as u32;
+        // let area = polygon_area(&shape);
+        // let number = (area / 100.0).floor() as u32;
+        let factors = Factors::from(bounds.clone());
+        let number = factors.0;
 
         commands
             .spawn(ShapeBundle {
@@ -631,7 +633,7 @@ fn asteroid_generation_system(
             .insert(Velocity::from(velocity))
             .insert(AngularVelocity::from(rng.gen_range(-3.0..3.0)))
             .insert(BoundaryRemoval)
-            .insert(Factors(number))
+            .insert(factors)
             .with_children(|parent| {
                 parent.spawn(Text2dBundle {
                     text: Text::from_section(format!("{}", number), TextStyle::default()),
@@ -729,6 +731,24 @@ fn ship_hit_system(
     }
 }
 
+fn prime_factors(num: u32) -> Vec<u32> {
+    let mut factor_repr = prime_factorization::Factorization::<u32>::run(num).prime_factor_repr();
+    let mut current: Option<(u32, u32)> = None;
+
+    std::iter::from_fn(move || {
+        if current.is_none() {
+            current = factor_repr.pop();
+        }
+        let Some((factor, ref mut count)) = current else { return None };
+        *count = count.saturating_sub(1);
+        if *count <= 0 {
+            current = None;
+        }
+        Some(factor)
+    })
+        .collect()
+}
+
 fn asteroid_hit_system(
     asteroid_sizes: Res<AsteroidSizes>,
     mut rng: Local<Random>,
@@ -751,9 +771,7 @@ fn asteroid_hit_system(
         let Ok(bullet_factor) = bullet_query.get(bullet) else { continue; };
 
         if let Ok((transform, radius, asteroid_factors)) = query.get(asteroid) {
-            // let mut afactors: Vec<u32> = facto::Factoring::factor(asteroid_factors.0);
-            let mut afactors: Vec<u32> = vec![asteroid_factors.0];
-            // afactors = vec![asteroid_factors.0];
+            let mut afactors = prime_factors(asteroid_factors.0);
 
             // BUG: Ran into weird behavior with rustc here. It complained about
             // bounds not having a f32 < Bounds.
@@ -860,4 +878,15 @@ fn ufo_hit_system(
         commands.entity(bullet).despawn();
         removed.insert(bullet);
     }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    #[test]
+    fn test_prime_factors() {
+        assert_eq!(prime_factors(520u32), vec![13, 5, 2, 2, 2]);
+
+    }
+
 }
